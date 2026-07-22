@@ -309,6 +309,14 @@ class SearchManager {
 
     std::array<Key, AggressionPlanLength>  aggressionPlanKeys{};
     std::array<Move, AggressionPlanLength> aggressionPlanMoves{};
+    Move                                   lastAggressiveMove = Move::none();
+    Move                                   previousAggressiveMove = Move::none();
+    int                                    lastAggressiveGamePly = -1;
+    Color                                  lastAggressiveSide = WHITE;
+    int                                    aggressionRiskDebtCp = 0;
+    int                                    lastAggressiveObjectiveCp = 0;
+    bool                                   hasAggressiveObjective = false;
+    std::array<std::string, 4>             aggressionPostMovePositions{};
 
     const UpdateContext& updates;
 };
