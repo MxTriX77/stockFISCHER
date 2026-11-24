@@ -138,7 +138,7 @@ int central_break_score(const Position& pos, Color engine) {
     constexpr Bitboard centralFiles = FileDBB | FileEBB;
 
     const Color    them        = ~engine;
-    const Bitboard pawnAttacks = pos.attacks_by<PAWN>(engine);
+    const Bitboard pawnAttacks = pos.xattacks_by(PAWN, engine, pos.pieces());
     const Bitboard advancedCentralPawns =
       pos.pieces(engine, PAWN) & centralFiles
       & (engine == WHITE ? Rank4BB | Rank5BB | Rank6BB : Rank3BB | Rank4BB | Rank5BB);
@@ -153,7 +153,7 @@ int open_king_lines_score(const Position& pos, Color engine) {
     const File     enemyKingFile = file_of(pos.square<KING>(them));
     const Bitboard allPawns      = pos.pieces(PAWN);
     const Bitboard heavyAttacks =
-      pos.attacks_by<ROOK>(engine) | pos.attacks_by<QUEEN>(engine);
+      pos.xattacks_by(ROOK, engine, pos.pieces()) | pos.xattacks_by(QUEEN, engine, pos.pieces());
     int score = 0;
 
     for (int file = std::max(0, int(enemyKingFile) - 1);
@@ -176,7 +176,7 @@ int development_tempo_score(const Position& pos, Color engine) {
                       : square_bb(SQ_B8) | SQ_C8 | SQ_F8 | SQ_G8;
     const Bitboard activeMinors = pos.pieces(engine, KNIGHT, BISHOP) & ~homeMinors;
     const Bitboard minorAttacks =
-      pos.attacks_by<KNIGHT>(engine) | pos.attacks_by<BISHOP>(engine);
+      pos.xattacks_by(KNIGHT, engine, pos.pieces()) | pos.xattacks_by(BISHOP, engine, pos.pieces());
     const Bitboard valuableTargets = pos.pieces(~engine, KNIGHT, BISHOP, ROOK, QUEEN);
 
     return 3 * popcount(activeMinors) + 5 * popcount(minorAttacks & valuableTargets);
@@ -224,7 +224,7 @@ int aggression_opportunity(const Position& pos, Color engine) {
     score += std::clamp(pressureEdge / 6, 0, 25);
 
     Bitboard enemyKingZone =
-      Attacks::attacks_bb<KING>(pos.square<KING>(them)) | pos.square<KING>(them);
+      Attacks::attacks_bb(KING, pos.square<KING>(them)) | pos.square<KING>(them);
     const int shelterPawns = popcount(enemyKingZone & pos.pieces(them, PAWN));
     score += 6 * std::max(0, 3 - shelterPawns);
 
@@ -239,11 +239,11 @@ int aggression_opportunity(const Position& pos, Color engine) {
 int positional_pressure(const Position& pos, Color engine) {
     const Color them = ~engine;
 
-    const Bitboard attacks = pos.attacks_by<PAWN>(engine) | pos.attacks_by<KNIGHT>(engine)
-                           | pos.attacks_by<BISHOP>(engine) | pos.attacks_by<ROOK>(engine)
-                           | pos.attacks_by<QUEEN>(engine) | pos.attacks_by<KING>(engine);
+    const Bitboard attacks = pos.xattacks_by(PAWN, engine, pos.pieces()) | pos.xattacks_by(KNIGHT, engine, pos.pieces())
+                           | pos.xattacks_by(BISHOP, engine, pos.pieces()) | pos.xattacks_by(ROOK, engine, pos.pieces())
+                           | pos.xattacks_by(QUEEN, engine, pos.pieces()) | pos.xattacks_by(KING, engine, pos.pieces());
     Bitboard kingZone =
-      Attacks::attacks_bb<KING>(pos.square<KING>(them)) | pos.square<KING>(them);
+      Attacks::attacks_bb(KING, pos.square<KING>(them)) | pos.square<KING>(them);
     Bitboard kingAttackers = 0;
     Bitboard zoneSquares   = kingZone;
     while (zoneSquares)
@@ -315,13 +315,12 @@ int aggressive_seed_score(const Position& rootPos, Move move) {
     }
 
     Position  pos;
-    StateInfo rootState, moveState;
-    if (pos.set(rootPos.fen(), rootPos.is_chess960(), &rootState))
+    if (pos.set(rootPos.fen(), rootPos.is_chess960()))
         return score;
 
     const int initialStyle = positional_style(pos, engine);
     const int initialPhase = phase_aggression(pos, engine);
-    pos.do_move(move, moveState);
+    pos.do_move(move);
 
     score += 4 * std::max(0, positional_style(pos, engine) - initialStyle);
     score += 3 * std::max(0, phase_aggression(pos, engine) - initialPhase);
@@ -428,12 +427,11 @@ struct AggressionMetrics {
 };
 
 bool analyze_aggression_pv(const Position& rootPos,
-                           const PVMoves&  pv,
+                           const RootPVMoves& pv,
                            AggressionMetrics& metrics) {
     Position  pos;
-    StateInfo rootState;
 
-    if (pos.set(rootPos.fen(), rootPos.is_chess960(), &rootState))
+    if (pos.set(rootPos.fen(), rootPos.is_chess960()))
         return false;
 
     const Color engine = pos.side_to_move();
@@ -446,7 +444,6 @@ bool analyze_aggression_pv(const Position& rootPos,
     const int initialEngineQueens   = pos.count<QUEEN>(engine);
     const int initialEnemyQueens    = pos.count<QUEEN>(them);
 
-    std::array<StateInfo, AGGRESSION_PV_PLIES> states;
     const usize plies = std::min(AGGRESSION_PV_PLIES, pv.size());
     const int   initialPressure = positional_style(pos, engine);
     const int   initialPhase    = phase_aggression(pos, engine);
@@ -459,7 +456,7 @@ bool analyze_aggression_pv(const Position& rootPos,
         const Move move       = pv[ply];
         const bool engineMove = pos.side_to_move() == engine;
 
-        if (!move.is_ok() || !pos.pseudo_legal(move) || !pos.legal(move))
+        if (!move.is_ok() || !pos.legal(move))
             return false;
 
         if (engineMove && pos.gives_check(move))
@@ -489,7 +486,7 @@ bool analyze_aggression_pv(const Position& rootPos,
         else if (!engineMove && pos.capture_stage(move) && move.to_sq() == rootPieceSquare)
             rootPieceSquare = SQ_NONE;
 
-        pos.do_move(move, states[ply]);
+        pos.do_move(move);
         if (pos.is_repetition(int(ply) + 1))
             metrics.repetition = true;
 
@@ -504,7 +501,7 @@ bool analyze_aggression_pv(const Position& rootPos,
             const int investment = std::max(0, engineLoss - enemyLoss);
             const int pressureGain = positional_style(pos, engine) - initialPressure;
             const int phaseGain    = phase_aggression(pos, engine) - initialPhase;
-            const int legalReplies = int(MoveList<LEGAL>(pos).size());
+            const int legalReplies = int(MoveList<ALL>(pos).size());
             const int restriction = std::max(0, 32 - legalReplies);
             const int engineQueenLoss =
               std::max(0, initialEngineQueens - pos.count<QUEEN>(engine));
@@ -557,7 +554,7 @@ bool analyze_aggression_pv(const Position& rootPos,
 bool exact_root_score(const RootMove& rootMove) {
     return !rootMove.pv.empty() && rootMove.score != VALUE_NONE
         && rootMove.score != -VALUE_INFINITE && rootMove.score != VALUE_INFINITE
-        && !rootMove.score_is_bound();
+        && !(rootMove.inexactLower || rootMove.inexactUpper);
 }
 
 Value objective_top_score(const RootMoves& rootMoves, usize candidateCount) {
@@ -678,11 +675,10 @@ void remember_aggressive_move(const Position& rootPos, Move move, SearchManager&
               manager.aggressionPostMovePositions[i - 1];
 
     Position  pos;
-    StateInfo rootState, moveState;
-    if (!pos.set(rootPos.fen(), rootPos.is_chess960(), &rootState) && move.is_ok()
-        && pos.pseudo_legal(move) && pos.legal(move))
+    if (!pos.set(rootPos.fen(), rootPos.is_chess960()) && move.is_ok()
+        && pos.legal(move))
     {
-        pos.do_move(move, moveState);
+        pos.do_move(move);
         std::string fen = pos.fen();
         usize       end = 0;
         for (int field = 0; field < 4; ++field)
@@ -710,12 +706,11 @@ bool repeats_recent_aggressive_position(
         return false;
 
     Position  pos;
-    StateInfo rootState, moveState;
-    if (pos.set(rootPos.fen(), rootPos.is_chess960(), &rootState) || !move.is_ok()
-        || !pos.pseudo_legal(move) || !pos.legal(move))
+    if (pos.set(rootPos.fen(), rootPos.is_chess960()) || !move.is_ok()
+        || !pos.legal(move))
         return false;
 
-    pos.do_move(move, moveState);
+    pos.do_move(move);
     std::string fen = pos.fen();
     usize       end = 0;
     for (int field = 0; field < 4; ++field)
@@ -806,24 +801,22 @@ Move planned_aggressive_move(const Position& rootPos, const SearchManager& manag
 }
 
 void remember_aggression_plan(const Position& rootPos,
-                              const PVMoves&  pv,
+                              const RootPVMoves& pv,
                               SearchManager&  manager) {
     clear_aggression_plan(manager);
 
     Position  pos;
-    StateInfo rootState;
-    if (pos.set(rootPos.fen(), rootPos.is_chess960(), &rootState))
+    if (pos.set(rootPos.fen(), rootPos.is_chess960()))
         return;
 
     const Color engine = pos.side_to_move();
-    std::array<StateInfo, AGGRESSION_PV_PLIES> states;
     const usize plies = std::min(AGGRESSION_PV_PLIES, pv.size());
     usize       planIndex = 0;
 
     for (usize ply = 0; ply < plies; ++ply)
     {
         const Move move = pv[ply];
-        if (!move.is_ok() || !pos.pseudo_legal(move) || !pos.legal(move))
+        if (!move.is_ok() || !pos.legal(move))
             return;
 
         // At future engine-to-move positions remember the next move of the chosen
@@ -836,7 +829,7 @@ void remember_aggression_plan(const Position& rootPos,
             ++planIndex;
         }
 
-        pos.do_move(move, states[ply]);
+        pos.do_move(move);
     }
 }
 
@@ -886,7 +879,7 @@ Move select_aggressive_move(const Position& rootPos,
 
         if (rootMove.pv.empty() || rootMove.score == VALUE_NONE
             || rootMove.score == -VALUE_INFINITE || rootMove.score == VALUE_INFINITE
-            || rootMove.score_is_bound() || is_loss(rootMove.score))
+            || (rootMove.inexactLower || rootMove.inexactUpper) || is_loss(rootMove.score))
             continue;
 
         const int scoreCp    = UCIEngine::to_cp(rootMove.score, rootPos);
@@ -1029,6 +1022,14 @@ Move select_aggressive_move(const Position& rootPos,
 
     return stockfishMove;
 }
+
+// Reductions lookup table indexed by depth or move number.
+const std::array<int, MAX_MOVES> reductions = [] {
+    std::array<int, MAX_MOVES> table{};
+    for (usize i = 1; i < table.size(); ++i)
+        table[i] = int(2872 / 128.0 * std::log(i));
+    return table;
+}();
 
 // (*Scalers):
 // The values with Scaler asterisks have proven non-linear scaling.
@@ -1230,10 +1231,10 @@ bool Search::Worker::iterative_deepening() {
 
     PVMoves pv;
 
-    PVMoves lastBestMovePV;
-    Depth   lastBestMoveDepth = 0;
-    Value   lastBestMoveScore = -VALUE_INFINITE;
-    RootMoves aggressionSnapshot;
+    RootPVMoves lastBestMovePV;
+    Depth       lastBestMoveDepth = 0;
+    Value       lastBestMoveScore = -VALUE_INFINITE;
+    RootMoves   aggressionSnapshot;
 
     Value  alpha, beta, bestValue;
     double timeReduction = 1, totBestMoveChanges = 0;
@@ -1368,8 +1369,8 @@ bool Search::Worker::iterative_deepening() {
                                 + int(aggressiveMode
                                       && is_aggressive_seed(aggressiveSeeds,
                                                             rootMoves[pvIdx].pv[0]))
-                                - failedHighCnt - 3 * (searchAgainCounter + 1) / 4);
-                rootDelta = beta - alpha;
+                                - failedHighCnt - failHighRecovery
+                                - 3 * (searchAgainCounter + 1) / 4);
                 bestValue = search<Root>(rootPos, ss, alpha, beta, adjustedDepth, false);
 
                 // Bring the best move to the front. It is critical that sorting
@@ -1654,7 +1655,7 @@ bool Search::Worker::iterative_deepening() {
                                      aggressionManager.aggressionPostMovePositions);
         auto snapshotSelected =
           std::find(selectionMoves->begin(), selectionMoves->end(), aggressiveMove);
-        const PVMoves selectedPV =
+        const RootPVMoves selectedPV =
           snapshotSelected != selectionMoves->end() ? snapshotSelected->pv : rootMoves[0].pv;
         auto selected = std::find(rootMoves.begin(), rootMoves.end(), aggressiveMove);
         if (selected != rootMoves.end())
@@ -1663,6 +1664,7 @@ bool Search::Worker::iterative_deepening() {
                 && snapshotSelected != selectionMoves->end())
                 *selected = *snapshotSelected;
             std::swap(rootMoves[0], *selected);
+            uciPvSent = false;  // report the PV of the move actually played
         }
 
         if (aggressiveMove != stockfishMove || aggressiveMove == plannedMove)
@@ -1685,11 +1687,19 @@ bool Search::Worker::iterative_deepening() {
     {
         clear_aggression_state(*main_manager());
 
-        // If the skill level is enabled, swap the best PV line with the sub-optimal one.
+        // If the skill level is enabled, swap the best PV line with the sub-optimal one
         if (skill.enabled())
-            std::swap(rootMoves[0],
-                      *std::find(rootMoves.begin(), rootMoves.end(),
-                                 skill.best ? skill.best : skill.pick_best(rootMoves, multiPV)));
+        {
+            Move pick = skill.best ? skill.best : skill.pick_best(rootMoves, multiPV);
+            if (pick != rootMoves[0].pv[0])
+            {
+                const auto bestScore = rootMoves[0].score;
+                std::swap(rootMoves[0], *std::find(rootMoves.begin(), rootMoves.end(), pick));
+                if (is_loss(rootMoves[0].score) && rootMoves[0].score < bestScore)
+                    rootMoves[0].inexactLower = true;
+                uciPvSent = false;
+            }
+        }
     }
 
     return uciPvSent;
